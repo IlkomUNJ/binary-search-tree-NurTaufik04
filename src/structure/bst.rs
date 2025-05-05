@@ -64,39 +64,48 @@ impl BstNode {
 
     //search the current tree which node fit the value
     pub fn tree_search(&self, value: &i32) -> Option<BstNodeLink> {
-        if let Some(key) = self.key {
-            if key == *value {
-                return Some(self.get_bst_nodelink_copy());
+        let mut current = Some(self.get_bst_nodelink_copy());
+
+        while let Some(node_link) = current {
+            let node = node_link.borrow();
+            if node.key.is_none() {
+                return None;
             }
-            if *value < key && self.left.is_some() {
-                return self.left.as_ref().unwrap().borrow().tree_search(value);
-            } else if self.right.is_some() {
-                return self.right.as_ref().unwrap().borrow().tree_search(value);
+            let node_key = node.key.unwrap();
+            if *value == node_key {
+                return Some(node_link.clone());
+            } else if *value < node_key {
+                current = node.left.clone();
+            } else {
+                current = node.right.clone();
             }
         }
-        //default if current node is NIL
         None
     }
 
     /**seek minimum by recurs
      * in BST minimum always on the left
      */
-    pub fn minimum(&self) -> BstNodeLink {
-        if self.key.is_some() {
-            if let Some(left_node) = &self.left {
-                return left_node.borrow().minimum();
+     pub fn minimum(&self) -> BstNodeLink {
+        let mut current = self.get_bst_nodelink_copy();
+        loop {
+            let left = current.borrow().left.clone();
+            if left.is_none() {
+                return current;
             }
+            current = left.unwrap();
         }
-        self.get_bst_nodelink_copy()
     }
 
     pub fn maximum(&self) -> BstNodeLink {
-        if self.key.is_some() {
-            if let Some(right_node) = &self.right {
-                return right_node.borrow().maximum();
+        let mut current = self.get_bst_nodelink_copy();
+        loop {
+            let right = current.borrow().right.clone();
+            if right.is_none() {
+                return current;
             }
+            current = right.unwrap();
         }
-        self.get_bst_nodelink_copy()
     }
 
     /**
@@ -115,32 +124,22 @@ impl BstNode {
      * Find node successor according to the book
      * Should return None, if x_node is the highest key in the tree
      */
-    pub fn tree_successor(x_node: &BstNodeLink) -> Option<BstNodeLink> {
-        // directly check if the node has a right child, otherwise go to the next block
-        if let Some(right_node) = &x_node.borrow().right {
-            return Some(right_node.borrow().minimum());
-        } 
-        
-        // empty right child case
-        else { 
-            let mut x_node = x_node;
-            let mut y_node = BstNode::upgrade_weak_to_strong(x_node.borrow().parent.clone());
-            let mut temp: BstNodeLink;
-
-            while let Some(ref exist) = y_node {
-                if let Some(ref left_child) = exist.borrow().left {
-                    if BstNode::is_node_match(left_child, x_node) {
-                        return Some(exist.clone());
-                    }
-                }
-
-                temp = y_node.unwrap();
-                x_node = &temp;
-                y_node = BstNode::upgrade_weak_to_strong(temp.borrow().parent.clone());
-            }
-
-            None    
+     pub fn tree_successor(x_node: &BstNodeLink) -> BstNodeLink {
+        let x_ref = x_node.borrow();
+        if let Some(right) = x_ref.right.clone() {
+            return right.borrow().minimum();
         }
+        drop(x_ref); // important to release borrow before mutate x_node
+        let mut x = x_node.clone();
+        let mut y_opt = BstNode::upgrade_weak_to_strong(x.borrow().parent.clone());
+        while let Some(y) = y_opt.clone() {
+            if Rc::ptr_eq(&x, &y.borrow().left.clone().unwrap_or_else(|| BstNode::new_bst_nodelink(0))) {
+                return y;
+            }
+            x = y;
+            y_opt = BstNode::upgrade_weak_to_strong(x.borrow().parent.clone());
+        }
+        x_node.clone() // return self if no successor (means x is the maximum node)
     }
 
     /**
@@ -217,6 +216,77 @@ impl BstNode {
         match node {
             None => None,
             Some(x) => Some(x.upgrade().unwrap()),
+        }
+    }
+
+    pub fn tree_insert(root: &BstNodeLink, key: i32) {
+        let z = BstNode::new_bst_nodelink(key);
+        let mut y: Option<BstNodeLink> = None;
+        let mut x = Some(Rc::clone(root));
+    
+        while let Some(current) = x.take() { // Take ownership of the Option
+            y = Some(Rc::clone(&current));
+            let current_borrowed = current.borrow();
+    
+            if key < current_borrowed.key.unwrap() {
+                x = current_borrowed.left.clone();
+            } else {
+                x = current_borrowed.right.clone();
+            }
+        }
+    
+        z.borrow_mut().parent = y.as_ref().map(Rc::downgrade);
+    
+        if let Some(ref y_node) = y {
+            if key < y_node.borrow().key.unwrap() {
+                y_node.borrow_mut().left = Some(Rc::clone(&z));
+            } else {
+                y_node.borrow_mut().right = Some(Rc::clone(&z));
+            }
+        }
+    }
+
+    pub fn transplant(u: &BstNodeLink, v: Option<BstNodeLink>) {
+        if let Some(parent_weak) = &u.borrow().parent {
+            if let Some(parent) = parent_weak.upgrade() {
+                if parent.borrow().left.as_ref().map(|x| Rc::ptr_eq(x, u)).unwrap_or(false) {
+                    parent.borrow_mut().left = v.clone();
+                } else {
+                    parent.borrow_mut().right = v.clone();
+                }
+                if let Some(ref v_node) = v {
+                    v_node.borrow_mut().parent = Some(Rc::downgrade(&parent));
+                }
+            }
+        }
+    }
+
+    pub fn tree_delete(root: &BstNodeLink, key: i32) {
+        if let Some(node) = root.borrow().tree_search(&key) {
+            let left = node.borrow().left.clone();
+            let right = node.borrow().right.clone();
+
+            if left.is_none() {
+                BstNode::transplant(&node, right);
+            } else if right.is_none() {
+                BstNode::transplant(&node, left);
+            } else {
+                let min_right = right.as_ref().unwrap().borrow().minimum();
+                if min_right.borrow().parent.as_ref().unwrap().upgrade().unwrap().as_ptr()
+                    != node.as_ptr()
+                {
+                    BstNode::transplant(&min_right, min_right.borrow().right.clone());
+                    min_right.borrow_mut().right = right.clone();
+                    if let Some(ref r) = right {
+                        r.borrow_mut().parent = Some(Rc::downgrade(&min_right));
+                    }
+                }
+                BstNode::transplant(&node, Some(Rc::clone(&min_right)));
+                min_right.borrow_mut().left = left.clone();
+                if let Some(ref l) = left {
+                    l.borrow_mut().parent = Some(Rc::downgrade(&min_right));
+                }
+            }
         }
     }
 }
